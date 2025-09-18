@@ -1,0 +1,4 @@
+readv returned 4
+errno after readv: 0 (Success)
+head buffer: abcd
+partial buffer bytes: 65 66
