@@ -209,8 +209,11 @@ dword_t sys_mknod(addr_t path_addr, mode_t_ mode, dev_t_ dev) {
     return sys_mknodat(AT_FDCWD_, path_addr, mode, dev);
 }
 
-static ssize_t sys_read_buf(fd_t fd_no, void *buf, size_t size) {
-    struct fd *fd = f_get(fd_no);
+// Keep the chunk modest so we cap stack usage without thrashing the host with
+// tiny reads/writes; 4KiB aligns with our page size assumptions elsewhere.
+#define IO_BUF_CHUNK 4096
+
+static ssize_t fd_read_buf(struct fd *fd, void *buf, size_t size) {
     if (fd == NULL)
         return _EBADF;
     if (S_ISDIR(fd->type))
@@ -236,22 +239,57 @@ static ssize_t sys_read_buf(fd_t fd_no, void *buf, size_t size) {
     return res;
 }
 
-dword_t sys_read(fd_t fd_no, addr_t buf_addr, dword_t size) {
-    STRACE("read(%d, 0x%x, %d)", fd_no, buf_addr, size);
-    char *buf = (char *) malloc(size);
-    if (buf == NULL)
-        return _ENOMEM;
-    int_t res = sys_read_buf(fd_no, buf, size);
-    if (res >= 0) {
-        if (user_write(buf_addr, buf, res))
-            res = _EFAULT;
-    }
-    free(buf);
-    return res;
+static ssize_t sys_read_buf(fd_t fd_no, void *buf, size_t size) {
+    struct fd *fd = f_get(fd_no);
+    return fd_read_buf(fd, buf, size);
 }
 
-static ssize_t sys_write_buf(fd_t fd_no, void *buf, size_t size) {
+dword_t sys_read(fd_t fd_no, addr_t buf_addr, dword_t size) {
+    STRACE("read(%d, 0x%x, %d)", fd_no, buf_addr, size);
+
     struct fd *fd = f_get(fd_no);
+    if (fd == NULL)
+        return _EBADF;
+
+    if (size == 0) {
+        char scratch;
+        ssize_t res = fd_read_buf(fd, &scratch, 0);
+        if (res < 0)
+            return res;
+        return 0;
+    }
+
+    char buf[IO_BUF_CHUNK];
+    dword_t total = 0;
+
+    while (total < size) {
+        size_t chunk_size = size - total;
+        if (chunk_size > IO_BUF_CHUNK)
+            chunk_size = IO_BUF_CHUNK;
+
+        ssize_t res = fd_read_buf(fd, buf, chunk_size);
+        if (res <= 0) {
+            if (res < 0 && total == 0)
+                return res;
+            if (res < 0)
+                return total;
+            break;
+        }
+
+        // Only copy back what the backend produced; any short read should be
+        // reflected in the total we report to userspace.
+        if (user_write(buf_addr + total, buf, res))
+            return _EFAULT;
+
+        total += res;
+        if ((size_t) res < chunk_size)
+            break;
+    }
+
+    return total;
+}
+
+static ssize_t fd_write_buf(struct fd *fd, void *buf, size_t size) {
     if (fd == NULL)
         return _EBADF;
 
@@ -269,23 +307,60 @@ static ssize_t sys_write_buf(fd_t fd_no, void *buf, size_t size) {
     return res;
 }
 
+static ssize_t sys_write_buf(fd_t fd_no, void *buf, size_t size) {
+    struct fd *fd = f_get(fd_no);
+    return fd_write_buf(fd, buf, size);
+}
+
 dword_t sys_write(fd_t fd_no, addr_t buf_addr, dword_t size) {
-    // FIXME this is a DOS vector, should ideally use vectorized I/O
-    char *buf = malloc(size);
-    if (buf == NULL)
-        return _ENOMEM;
-    dword_t res = _EFAULT;
-    if (user_read(buf_addr, buf, size))
-        goto out;
+    struct fd *fd = f_get(fd_no);
+    if (fd == NULL)
+        return _EBADF;
 
-    size_t print_size = size;
-    if (print_size > 100) print_size = 100;
-    STRACE("write(%d, \"%.*s\", %d)", fd_no, print_size, buf, size);
+    if (size == 0) {
+        STRACE("write(%d, \"\", %d)", fd_no, size);
+        char scratch;
+        ssize_t res = fd_write_buf(fd, &scratch, 0);
+        return res < 0 ? res : 0;
+    }
 
-    res = sys_write_buf(fd_no, buf, size);
-out:
-    free(buf);
-    return res;
+    char buf[IO_BUF_CHUNK];
+    dword_t total = 0;
+    int logged = 0;
+
+    while (total < size) {
+        size_t chunk_size = size - total;
+        if (chunk_size > IO_BUF_CHUNK)
+            chunk_size = IO_BUF_CHUNK;
+
+        // Read the next slice from userspace before we touch the file, so a
+        // fault leaves the descriptor state unchanged.
+        if (user_read(buf_addr + total, buf, chunk_size))
+            return total > 0 ? total : _EFAULT;
+
+        if (!logged) {
+            size_t print_size = chunk_size;
+            if (print_size > 100)
+                print_size = 100;
+            STRACE("write(%d, \"%.*s\", %d)", fd_no, print_size, buf, size);
+            logged = 1;
+        }
+
+        ssize_t res = fd_write_buf(fd, buf, chunk_size);
+        if (res <= 0) {
+            // Propagate the first error we see; otherwise surface the bytes
+            // already written so callers can retry the remainder.
+            if (res < 0)
+                return total > 0 ? total : res;
+            break;
+        }
+
+        total += res;
+        if ((size_t) res < chunk_size)
+            break;
+    }
+
+    return total;
 }
 
 // The vector operations work by flattening the vector into a malloc buffer.

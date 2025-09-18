@@ -1,0 +1,22 @@
+# Performance Overhaul Task List
+
+- [ ] Stream sys_read/sys_write without full-size malloc buffers — Refactor the basic read/write syscalls to move data between user memory and kernel buffers in fixed-size chunks so large transfers no longer allocate whole-request temporaries. Ensure STRACE logging and short-read/write semantics remain intact. (Status: awaiting verification; chunked implementation needs test coverage before marking complete.)
+- [ ] Implement scatter/gather for sys_readv/writev — Iterate each iovec entry and perform chunked copies straight to/from user memory instead of flattening into a single malloc buffer, handling partial transfers and user faults per POSIX.
+- [ ] Eliminate extra buffers in pread/pwrite — Reuse the chunked helpers from basic read/write so positional I/O streams directly when supported, and keep the seek-based fallback consistent without large allocations.
+- [ ] Stream sys_getrandom directly into user buffers — Fill a fixed-size scratch buffer, copy each chunk to userspace immediately, and propagate short writes or faults without allocating `len` bytes.
+- [ ] Make sys_poll deduplicate without O(n²) — Replace the nested deduplication loops with a hash/array keyed by fd to aggregate events in one pass and update `revents` in O(1).
+- [ ] Shard futex_lock by address — Guard each futex hash bucket with its own lock, ordering acquisitions for requeue paths to avoid deadlocks while enabling parallel waits/wakes.
+- [ ] Trim redundant work in path_normalize — Cache mount context and metadata across components to avoid repeated lookups, string copies, and stats when walking paths.
+- [ ] Index mounts by mountpoint — Maintain an auxiliary structure that finds the best prefix without scanning every mount under `mounts_lock`.
+- [ ] Stop trimming mount path via memmove — Return mount suffix spans from `find_mount_and_trim_path` instead of rewriting the normalized path buffer and update all callers accordingly.
+- [ ] Stop holding inodes_lock across slow operations — Narrow `generic_openat` (and friends) so filesystem/device hooks run outside the global inode lock.
+- [ ] Scale inode cache hashing — Expand or shard the inode hash table with per-bucket locks so lookups and insertions avoid long walks under a single global lock.
+- [ ] Close fds outside fdtable lock — Snapshot active descriptors while holding the lock, then drop it before running `fd_close` so slow close handlers don’t stall everyone.
+- [ ] Make fdtable resizing amortized — Grow descriptor storage geometrically (or chunk it) to avoid reallocating and copying the full table on each expansion.
+- [ ] Allow lock-free f_get lookups — Introduce atomic refcounts or RCU-style reads so read-mostly descriptor lookups avoid grabbing the process-wide lock.
+- [ ] Make proc_lookup component search faster — Cache per-directory name lookups so procfs paths don’t re-enumerate every child on each component.
+- [ ] Make /proc root readdir skip sparse PIDs — Iterate only live processes by snapshotting PID lists instead of walking toward MAX_PID every time.
+- [ ] Cache proc file snapshots — Retain generated procfs data between reads until invalidated so repeated small reads don’t rebuild whole buffers.
+- [ ] Consolidate /proc metrics reads — Share helpers that read `/proc` files once per call and parse needed keys in-memory for platform stats.
+- [ ] Replace pt_find_hole linear scan — Track free virtual address intervals (e.g., tree or heap) so anonymous mappings find holes in O(log n).
+- [ ] Enlarge software TLB and enable incremental flush — Grow the emulator TLB (possibly set-associative) and invalidate only affected entries on mapping changes to curb thrash.
