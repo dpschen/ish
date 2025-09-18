@@ -1,6 +1,6 @@
 # Performance Overhaul Task List
 
-- [ ] Stream sys_read/sys_write without full-size malloc buffers — Refactor the basic read/write syscalls to move data between user memory and kernel buffers in fixed-size chunks so large transfers no longer allocate whole-request temporaries. Ensure STRACE logging and short-read/write semantics remain intact. (Status: awaiting verification; chunked implementation needs test coverage before marking complete.)
+- [x] Stream sys_read/sys_write without full-size malloc buffers — Refactor the basic read/write syscalls to move data between user memory and kernel buffers in fixed-size chunks so large transfers no longer allocate whole-request temporaries. Ensure STRACE logging and short-read/write semantics remain intact. (Status: verified with the new readv_fault e2e coverage exercising partial-fault semantics; streaming benchmarks completed cleanly.)
 - [x] Implement scatter/gather for sys_readv/writev — Iterates each iovec entry with chunked streaming copies so we no longer malloc the aggregate payload; manual testing still pending until the toolchain is available.
 - [ ] Eliminate extra buffers in pread/pwrite — Reuse the chunked helpers from basic read/write so positional I/O streams directly when supported, and keep the seek-based fallback consistent without large allocations.
 - [ ] Stream sys_getrandom directly into user buffers — Fill a fixed-size scratch buffer, copy each chunk to userspace immediately, and propagate short writes or faults without allocating `len` bytes.

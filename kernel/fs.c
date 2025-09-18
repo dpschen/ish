@@ -418,6 +418,8 @@ dword_t sys_readv(fd_t fd_no, addr_t iovec_addr, dword_t iovec_count) {
 
             if (user_write(base + copied, buf, res)) {
                 free(iovec);
+                if (total > 0)
+                    return total;
                 return _EFAULT;
             }
 
