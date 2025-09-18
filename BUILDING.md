@@ -46,6 +46,14 @@ After building, execute the test suite with `ninja -C build test` (or `meson tes
 
 The first end-to-end test invocation bootstraps a minimal Alpine Linux filesystem under `e2e_out/testfs`. During this bootstrap the harness downloads a minirootfs tarball with `wget` and, inside the emulator, runs `apk update && apk add build-base python2 python3`. Ensure your environment permits outbound HTTP traffic so that these package downloads succeed; if the network bootstrap fails, delete `e2e_out/testfs` before re-running the suite so that the setup step is retried.
 
+When working behind an explicit HTTP proxy the emulator does not automatically inherit the host's proxy settings. If you see `apk` reporting `network error (check Internet connection and firewall)` during the bootstrap step, manually seed the environment by exporting the proxy variables while running the package install command yourself:
+
+```
+./build/ish -f e2e_out/testfs /bin/sh -c 'export http_proxy=http://proxy:8080; export https_proxy=http://proxy:8080; apk update && apk add build-base python2 python3'
+```
+
+Replace the proxy URL with the values required on your network. Once the packages finish installing the test harness can be re-run normally.
+
 ## 5. Preparing a root filesystem
 
 To obtain a runnable root filesystem, download an Alpine Linux i386 minirootfs tarball and import it using the bundled tool:
