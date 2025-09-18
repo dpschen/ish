@@ -71,7 +71,20 @@ if [ ! -d "$FS" ]; then
             ./build/tools/fakefsify e2e_out/alpine.tar.gz "$FS"
             echo "###### Configuring iSH and installing base libraries"
             grep -E "^nameserver" /etc/resolv.conf | head -1 | $ISH /bin/sed -n "w /etc/resolv.conf"
-            $ISH /bin/sh -c "apk update && apk add build-base python2 python3"
+            PROXY_EXPORT=""
+            if [ -n "$http_proxy" ]; then
+                PROXY_EXPORT="$PROXY_EXPORT http_proxy=$http_proxy HTTP_PROXY=$http_proxy"
+            fi
+            if [ -n "$https_proxy" ]; then
+                PROXY_EXPORT="$PROXY_EXPORT https_proxy=$https_proxy HTTPS_PROXY=$https_proxy"
+            elif [ -n "$http_proxy" ]; then
+                PROXY_EXPORT="$PROXY_EXPORT https_proxy=$http_proxy HTTPS_PROXY=$http_proxy"
+            fi
+            if [ -n "$PROXY_EXPORT" ]; then
+                $ISH /bin/sh -c "export$PROXY_EXPORT; apk update && apk add build-base python2 python3"
+            else
+                $ISH /bin/sh -c "apk update && apk add build-base python2 python3"
+            fi
             ;;
         No) exit 1;;
     esac
@@ -86,6 +99,11 @@ test_setup() {
     rm -rf ./e2e_out/$1
     mkdir -p ./e2e_out/$1
     tar -cf - -C tests/e2e $1 | $ISH /bin/tar xf - -C /tmp/e2e
+    if [ -d tests/manual ]; then
+        $ISH /bin/rm -rf /tmp/e2e/manual
+        $ISH /bin/mkdir -p /tmp/e2e/manual
+        tar -cf - -C tests/manual . | $ISH /bin/tar xf - -C /tmp/e2e/manual
+    fi
 }
 
 test_teardown() {
@@ -143,7 +161,7 @@ if [ "$NUM_TOTAL" -eq 0 ]; then
 fi
 
 NUM_PASSES=$((NUM_TOTAL-NUM_FAILS))
-PERCENT_PASSES=$(echo "scale=2; 100 * $NUM_PASSES / $NUM_TOTAL" | bc)
+PERCENT_PASSES=$(awk "BEGIN { printf \"%.2f\", 100 * $NUM_PASSES / $NUM_TOTAL }")
 PASSED_STR="$NUM_PASSES/$NUM_TOTAL ($PERCENT_PASSES%)"
 printf "### Passed: %-22s ###\n" "$PASSED_STR" | tee -a "$SUMMARY_LOG"
 

@@ -96,12 +96,19 @@ static int proc_refresh_data(struct fd *fd) {
         return _EISDIR;
     assert(S_ISREG(mode));
 
+    struct proc_entry *entry = &fd->proc.entry;
+    if (entry->meta->show == NULL) {
+        // Pure pread-based entries (e.g. /proc/<pid>/mem) never populate the
+        // cached buffer, so leave it untouched and let the caller fall back to
+        // positional reads instead of dereferencing a missing ->show hook.
+        return 0;
+    }
+
     if (fd->proc.data.data == NULL) {
         fd->proc.data.capacity = 4096;
         fd->proc.data.data = malloc(fd->proc.data.capacity); // default size
     }
     fd->proc.data.size = 0;
-    struct proc_entry *entry = &fd->proc.entry;
     int err = entry->meta->show(entry, &fd->proc.data);
     if (err < 0)
         return err;
@@ -109,15 +116,34 @@ static int proc_refresh_data(struct fd *fd) {
 }
 
 static off_t_ proc_seek(struct fd *fd, off_t_ off, int whence) {
-    int err = proc_refresh_data(fd);
-    if (err < 0)
-        return err;
+    struct proc_dir_entry *meta = fd->proc.entry.meta;
 
-    err = generic_seek(fd, off, whence, fd->proc.data.size);
-    if (err < 0)
-        return err;
+    if (meta->show != NULL) {
+        int err = proc_refresh_data(fd);
+        if (err < 0)
+            return err;
 
-    return fd->offset;
+        err = generic_seek(fd, off, whence, fd->proc.data.size);
+        if (err < 0)
+            return err;
+
+        return fd->offset;
+    }
+
+    if (meta->pread != NULL) {
+        // Without a ->show() callback we lack a finite size, so only honour
+        // SEEK_SET/SEEK_CUR and treat SEEK_END as unsupported like Linux does.
+        if (whence == LSEEK_END)
+            return _EINVAL;
+
+        int err = generic_seek(fd, off, whence, 0);
+        if (err < 0)
+            return err;
+
+        return fd->offset;
+    }
+
+    return _EINVAL;
 }
 
 static ssize_t proc_pread(struct fd *fd, void *buf, size_t bufsize, off_t off) {

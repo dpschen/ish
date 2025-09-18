@@ -213,35 +213,67 @@ dword_t sys_mknod(addr_t path_addr, mode_t_ mode, dev_t_ dev) {
 // tiny reads/writes; 4KiB aligns with our page size assumptions elsewhere.
 #define IO_BUF_CHUNK 4096
 
-static ssize_t fd_read_buf(struct fd *fd, void *buf, size_t size) {
-    if (fd == NULL)
-        return _EBADF;
-    if (S_ISDIR(fd->type))
-        return _EISDIR;
+enum fd_read_mode {
+    FD_READ_MODE_NONE = 0,
+    FD_READ_MODE_READ,
+    FD_READ_MODE_PREAD,
+};
 
+struct fd_read_result {
     ssize_t res;
-    if (fd->ops->read) {
-        res = fd->ops->read(fd, buf, size);
-    } else if (fd->ops->pread) {
-        res = fd->ops->pread(fd, buf, size, fd->offset);
-        if (res > 0) {
-            fd->ops->lseek(fd, res, LSEEK_CUR);
-        }
-    } else {
-        return _EBADF;
+    enum fd_read_mode mode;
+};
+
+static struct fd_read_result fd_read_buf(struct fd *fd, void *buf, size_t size) {
+    struct fd_read_result result = {
+        .res = _EBADF,
+        .mode = FD_READ_MODE_NONE,
+    };
+
+    if (fd == NULL)
+        return result;
+    if (S_ISDIR(fd->type)) {
+        result.res = _EISDIR;
+        return result;
     }
 
-    if (res >= 0) {
-        size_t print_size = res;
+    if (fd->ops->read) {
+        result.res = fd->ops->read(fd, buf, size);
+        result.mode = FD_READ_MODE_READ;
+    } else if (fd->ops->pread) {
+        result.res = fd->ops->pread(fd, buf, size, fd->offset);
+        result.mode = FD_READ_MODE_PREAD;
+    } else {
+        return result;
+    }
+
+    if (result.res >= 0) {
+        size_t print_size = result.res;
         if (print_size > 100) print_size = 100;
         STRACE(" \"%.*s\"", print_size, buf);
     }
-    return res;
+
+    return result;
 }
 
-static ssize_t sys_read_buf(fd_t fd_no, void *buf, size_t size) {
-    struct fd *fd = f_get(fd_no);
-    return fd_read_buf(fd, buf, size);
+static void fd_read_commit(struct fd *fd, const struct fd_read_result *result) {
+    if (result->res <= 0)
+        return;
+
+    if (result->mode == FD_READ_MODE_PREAD) {
+        if (fd->ops->lseek)
+            fd->ops->lseek(fd, result->res, LSEEK_CUR);
+        else
+            fd->offset += result->res;
+    }
+}
+
+static void fd_read_rollback(struct fd *fd, const struct fd_read_result *result) {
+    if (result->res <= 0)
+        return;
+
+    if (result->mode == FD_READ_MODE_READ && fd->ops->lseek)
+        fd->ops->lseek(fd, -result->res, LSEEK_CUR);
 }
 
 dword_t sys_read(fd_t fd_no, addr_t buf_addr, dword_t size) {
@@ -253,9 +285,9 @@ dword_t sys_read(fd_t fd_no, addr_t buf_addr, dword_t size) {
 
     if (size == 0) {
         char scratch;
-        ssize_t res = fd_read_buf(fd, &scratch, 0);
-        if (res < 0)
-            return res;
+        struct fd_read_result peek = fd_read_buf(fd, &scratch, 0);
+        if (peek.res < 0)
+            return peek.res;
         return 0;
     }
 
@@ -267,7 +299,8 @@ dword_t sys_read(fd_t fd_no, addr_t buf_addr, dword_t size) {
         if (chunk_size > IO_BUF_CHUNK)
             chunk_size = IO_BUF_CHUNK;
 
-        ssize_t res = fd_read_buf(fd, buf, chunk_size);
+        struct fd_read_result chunk = fd_read_buf(fd, buf, chunk_size);
+        ssize_t res = chunk.res;
         if (res <= 0) {
             if (res < 0 && total == 0)
                 return res;
@@ -278,9 +311,12 @@ dword_t sys_read(fd_t fd_no, addr_t buf_addr, dword_t size) {
 
         // Only copy back what the backend produced; any short read should be
         // reflected in the total we report to userspace.
-        if (user_write(buf_addr + total, buf, res))
-            return _EFAULT;
+        if (user_write(buf_addr + total, buf, res)) {
+            fd_read_rollback(fd, &chunk);
+            return total > 0 ? total : _EFAULT;
+        }
 
+        fd_read_commit(fd, &chunk);
         total += res;
         if ((size_t) res < chunk_size)
             break;
@@ -305,11 +341,6 @@ static ssize_t fd_write_buf(struct fd *fd, void *buf, size_t size) {
         return _EBADF;
     }
     return res;
-}
-
-static ssize_t sys_write_buf(fd_t fd_no, void *buf, size_t size) {
-    struct fd *fd = f_get(fd_no);
-    return fd_write_buf(fd, buf, size);
 }
 
 dword_t sys_write(fd_t fd_no, addr_t buf_addr, dword_t size) {
@@ -408,7 +439,8 @@ dword_t sys_readv(fd_t fd_no, addr_t iovec_addr, dword_t iovec_count) {
             if (chunk_size > IO_BUF_CHUNK)
                 chunk_size = IO_BUF_CHUNK;
 
-            ssize_t res = fd_read_buf(fd, buf, chunk_size);
+            struct fd_read_result chunk = fd_read_buf(fd, buf, chunk_size);
+            ssize_t res = chunk.res;
             if (res <= 0) {
                 if (res < 0)
                     err = res;
@@ -417,10 +449,12 @@ dword_t sys_readv(fd_t fd_no, addr_t iovec_addr, dword_t iovec_count) {
             }
 
             if (user_write(base + copied, buf, res)) {
+                fd_read_rollback(fd, &chunk);
                 free(iovec);
-                return _EFAULT;
+                return total > 0 ? total : _EFAULT;
             }
 
+            fd_read_commit(fd, &chunk);
             size_t preview_copy = res;
             if (preview_copy > sizeof(preview) - preview_len)
                 preview_copy = sizeof(preview) - preview_len;

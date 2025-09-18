@@ -15,6 +15,7 @@ executable('fibbonaci', ['fibbonaci.c'])
 executable('cat', ['cat.c'])
 executable('stat', ['stat.c'], c_args: ['-D_FILE_OFFSET_BITS=64'])
 executable('getdents', ['getdents.c'])
+executable('partial_read_fault', ['partial_read_fault.c'])
 
 executable('signal', ['signal.c'], link_args: ['-static'])
 executable('forkexec', ['forkexec.c'])
