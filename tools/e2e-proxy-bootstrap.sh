@@ -7,17 +7,30 @@ set -eu
 usage() {
     cat <<'USAGE'
 Usage: e2e-proxy-bootstrap.sh [--http URL] [--https URL] [--no-proxy HOSTS]
+                               [--ish PATH] [--fs PATH]
 
 Reads proxy values from the environment (http_proxy/https_proxy/no_proxy) or
 from the provided options, then runs the Alpine package installation inside the
 emulator while exporting those variables. The script expects to be executed from
 anywhere inside the repository after `ninja -C build` has produced `build/ish`
-and after the e2e harness has created `e2e_out/testfs`.
+and after the e2e harness has created `e2e_out/testfs`. Use `--ish` or `--fs` if
+you keep those artifacts in non-default locations.
 USAGE
 }
 
 escape_sh() {
     printf "%s" "$1" | sed "s/'/'\\''/g"
+}
+
+resolve_path() {
+    case $1 in
+        /*)
+            printf "%s" "$1"
+            ;;
+        *)
+            printf "%s/%s" "$PROJECT_ROOT" "$1"
+            ;;
+    esac
 }
 
 SCRIPT_DIR=$(CDPATH="" cd -- "$(dirname "$0")" && pwd)
@@ -53,6 +66,20 @@ while [ "$#" -gt 0 ]; do
         --no-proxy=*)
             NO_PROXY_VALUE=${1#--no-proxy=}
             ;;
+        --ish)
+            shift || { echo "Missing value for --ish" >&2; usage; exit 1; }
+            ISH_BIN=$1
+            ;;
+        --ish=*)
+            ISH_BIN=${1#--ish=}
+            ;;
+        --fs)
+            shift || { echo "Missing value for --fs" >&2; usage; exit 1; }
+            TESTFS_DIR=$1
+            ;;
+        --fs=*)
+            TESTFS_DIR=${1#--fs=}
+            ;;
         -h|--help)
             usage
             exit 0
@@ -74,6 +101,9 @@ fi
 if [ -n "$HTTP_PROXY_VALUE" ] && [ -z "$HTTPS_PROXY_VALUE" ]; then
     HTTPS_PROXY_VALUE=$HTTP_PROXY_VALUE
 fi
+
+ISH_BIN=$(resolve_path "$ISH_BIN")
+TESTFS_DIR=$(resolve_path "$TESTFS_DIR")
 
 if [ ! -x "$ISH_BIN" ]; then
     echo "error: $ISH_BIN not found or not executable. Run 'ninja -C build' first." >&2

@@ -61,6 +61,9 @@ To avoid retyping that command, run the helper script in `tools/e2e-proxy-bootst
 ```
 
 The script reuses the HTTP proxy for HTTPS if none is provided and requires `build/ish` along with the partially bootstrapped `e2e_out/testfs` filesystem created by the first test run.
+Provide `--https` if the secure proxy differs, `--no-proxy` to preserve direct
+access to specific hosts, or `--ish`/`--fs` when your build artifacts live
+outside the default `build` and `e2e_out/testfs` paths.
 
 ## 5. Preparing a root filesystem
 
