@@ -38,7 +38,7 @@ iSHは、ユーザーモードのx86エミュレーションとシステムコ�
 
 ## テスト用のコマンドラインツールをビルドする
 
-環境を設定するには、プロジェクトディレクトリに移動し、`meson build`を実行して`build`ディレクトリを作成します。その後、buildディレクトリに移動し、`ninja`を実行します。
+環境を設定するには、プロジェクトディレクトリに移動し、`meson setup build`を実行して`build`ディレクトリを作成します。その後、buildディレクトリに移動し、`ninja`を実行します。
 
 自己完結型のAlpine linuxファイルシステムを設定するには、[Alpineウェブサイト](https://alpinelinux.org/downloads/)からi386用のAlpine minirootfs tarballをダウンロードし、`./tools/fakefsify`を実行します。minirootfs tarballを最初の引数として、出力ディレクトリの名前を2番目の引数として指定します。その後、`./ish -f alpine /bin/sh`を使用して、Alpineファイルシステム内でコマンドを実行できます。出力ディレクトリの名前が`alpine`であると仮定します。`tools/fakefsify`がbuildディレクトリに存在しない場合、それはシステム上でlibarchiveを見つけられなかったためかもしれません（インストール方法については上記を参照してください）。
 

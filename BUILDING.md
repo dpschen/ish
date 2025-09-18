@@ -18,6 +18,12 @@ Install the following tools before building:
 - libarchive development files (e.g., `brew install libarchive`, `sudo port install libarchive`, or `sudo apt install libarchive-dev`).
 - `pkg-config` if your distribution does not include it by default.
 
+On Debian/Ubuntu systems you can install the entire toolchain with a single command:
+
+`sudo apt-get install clang lld libsqlite3-dev libarchive-dev pkg-config meson ninja-build`
+
+> **VDSO requirement:** The VDSO build step invokes Clang with LLD. If that toolchain is missing, Meson fails while building the `vdso` target with an error such as `ld.lld: error: unable to execute command: Executable "ld.lld" doesn't exist!`. Install clang and lld before retrying.
+
 To exercise the end-to-end Meson tests you will also need common userland tools on the host system, notably `wget` (used to grab the Alpine minirootfs) and `bc` (used by the test harness when summarizing results).
 
 macOS developers will also need the latest Xcode in order to compile and sign the iOS application.
