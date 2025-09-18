@@ -46,6 +46,22 @@ After building, execute the test suite with `ninja -C build test` (or `meson tes
 
 The first end-to-end test invocation bootstraps a minimal Alpine Linux filesystem under `e2e_out/testfs`. During this bootstrap the harness downloads a minirootfs tarball with `wget` and, inside the emulator, runs `apk update && apk add build-base python2 python3`. Ensure your environment permits outbound HTTP traffic so that these package downloads succeed; if the network bootstrap fails, delete `e2e_out/testfs` before re-running the suite so that the setup step is retried.
 
+When working behind an explicit HTTP proxy the emulator does not automatically inherit the host's proxy settings. If you see `apk` reporting `network error (check Internet connection and firewall)` during the bootstrap step, manually seed the environment by exporting the proxy variables while running the package install command yourself:
+
+```
+./build/ish -f e2e_out/testfs /bin/sh -c 'export http_proxy=http://proxy:8080; export https_proxy=http://proxy:8080; apk update && apk add build-base python2 python3'
+```
+
+Replace the proxy URL with the values required on your network. Once the packages finish installing the test harness can be re-run normally.
+
+To avoid retyping that command, run the helper script in `tools/e2e-proxy-bootstrap.sh`. It reads proxy values from either the host environment (`http_proxy`, `https_proxy`, `no_proxy`) or the `--http`, `--https`, and `--no-proxy` flags, then invokes the emulator with the correct exports:
+
+```
+./tools/e2e-proxy-bootstrap.sh --http http://proxy:8080
+```
+
+The script reuses the HTTP proxy for HTTPS if none is provided and requires `build/ish` along with the partially bootstrapped `e2e_out/testfs` filesystem created by the first test run. Provide `--https` if the secure proxy differs, `--no-proxy` to preserve direct access to specific hosts, or `--ish`/`--fs` when your build artifacts live outside the default `build` and `e2e_out/testfs` paths.
+
 ## 5. Preparing a root filesystem
 
 To obtain a runnable root filesystem, download an Alpine Linux i386 minirootfs tarball and import it using the bundled tool:
