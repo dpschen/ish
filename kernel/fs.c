@@ -363,12 +363,9 @@ dword_t sys_write(fd_t fd_no, addr_t buf_addr, dword_t size) {
     return total;
 }
 
-// The vector operations work by flattening the vector into a malloc buffer.
-// This at least isn't much worse than what it was before, which copied each
-// element of the vector into a malloc buffer. The perfect solution would be to
-// construct a vector with an entry for each page of the buffer. I haven't done
-// that yet because it's more work and the efficiency gain from that is dwarfed
-// by the inefficiency of the emulator.
+// The vector syscalls only pull the iovec metadata into kernel memory. The
+// payload itself is streamed chunk by chunk so we avoid large intermediate
+// allocations while still respecting partial-transfer semantics.
 
 static struct iovec_ *read_iovec(addr_t iovec_addr, unsigned iovec_count) {
     dword_t iovec_size = sizeof(struct iovec_) * iovec_count;
@@ -382,45 +379,75 @@ static struct iovec_ *read_iovec(addr_t iovec_addr, unsigned iovec_count) {
     return iovec;
 }
 
-static ssize_t iovec_size(struct iovec_ *iovec, unsigned iovec_count) {
-    size_t size = 0;
-    for (unsigned i = 0; i < iovec_count; i++)
-        size += iovec[i].len;
-    return size;
-}
-
 dword_t sys_readv(fd_t fd_no, addr_t iovec_addr, dword_t iovec_count) {
     STRACE("readv(%d, %#x, %d)", fd_no, iovec_addr, iovec_count);
     struct iovec_ *iovec = read_iovec(iovec_addr, iovec_count);
     if (IS_ERR(iovec))
         return PTR_ERR(iovec);
-    size_t io_size = iovec_size(iovec, iovec_count);
-    char *buf = malloc(io_size);
-    if (buf == NULL) {
+
+    struct fd *fd = f_get(fd_no);
+    if (fd == NULL) {
         free(iovec);
-        return _ENOMEM;
+        return _EBADF;
     }
-    ssize_t res = sys_read_buf(fd_no, buf, io_size);
-    if (res < 0)
-        goto error;
 
-    size_t offset = 0;
-    for (unsigned i = 0; i < iovec_count; i++) {
-        size_t print_size = iovec[i].len;
-        if (print_size > 100) print_size = 100;
-        STRACE(" {\"%.*s\", %u}", print_size, buf + offset, iovec[i].len);
+    char buf[IO_BUF_CHUNK];
+    dword_t total = 0;
+    int done = 0;
+    int err = 0;
 
-        if (user_write(iovec[i].base, buf + offset, iovec[i].len)) {
-            res = _EFAULT;
-            goto error;
+    for (unsigned i = 0; i < iovec_count && !done; i++) {
+        addr_t base = iovec[i].base;
+        size_t len = iovec[i].len;
+        size_t copied = 0;
+        char preview[100];
+        size_t preview_len = 0;
+
+        while (copied < len) {
+            size_t chunk_size = len - copied;
+            if (chunk_size > IO_BUF_CHUNK)
+                chunk_size = IO_BUF_CHUNK;
+
+            ssize_t res = fd_read_buf(fd, buf, chunk_size);
+            if (res <= 0) {
+                if (res < 0)
+                    err = res;
+                done = 1;
+                break;
+            }
+
+            if (user_write(base + copied, buf, res)) {
+                free(iovec);
+                return _EFAULT;
+            }
+
+            size_t preview_copy = res;
+            if (preview_copy > sizeof(preview) - preview_len)
+                preview_copy = sizeof(preview) - preview_len;
+            if (preview_copy > 0) {
+                memcpy(preview + preview_len, buf, preview_copy);
+                preview_len += preview_copy;
+            }
+
+            total += res;
+            copied += res;
+
+            if ((size_t) res < chunk_size) {
+                done = 1;
+                break;
+            }
         }
-        offset += iovec[i].len;
+
+        STRACE(" {\"%.*s\", %u}", (int) preview_len, preview, iovec[i].len);
+
+        if (copied < len)
+            done = 1;
     }
 
-error:
-    free(buf);
     free(iovec);
-    return res;
+    if (err < 0 && total == 0)
+        return err;
+    return total;
 }
 
 dword_t sys_writev(fd_t fd_no, addr_t iovec_addr, dword_t iovec_count) {
@@ -428,32 +455,67 @@ dword_t sys_writev(fd_t fd_no, addr_t iovec_addr, dword_t iovec_count) {
     struct iovec_ *iovec = read_iovec(iovec_addr, iovec_count);
     if (IS_ERR(iovec))
         return PTR_ERR(iovec);
-    size_t io_size = iovec_size(iovec, iovec_count);
-    char *buf = malloc(io_size);
-    if (buf == NULL) {
+
+    struct fd *fd = f_get(fd_no);
+    if (fd == NULL) {
         free(iovec);
-        return _ENOMEM;
+        return _EBADF;
     }
 
-    ssize_t res = 0;
-    size_t offset = 0;
-    for (unsigned i = 0; i < iovec_count; i++) {
-        if (user_read(iovec[i].base, buf + offset, iovec[i].len)) {
-            res = _EFAULT;
-            goto error;
+    char buf[IO_BUF_CHUNK];
+    dword_t total = 0;
+    int done = 0;
+
+    for (unsigned i = 0; i < iovec_count && !done; i++) {
+        addr_t base = iovec[i].base;
+        size_t len = iovec[i].len;
+        size_t written = 0;
+        char preview[100];
+        size_t preview_len = 0;
+
+        while (written < len) {
+            size_t chunk_size = len - written;
+            if (chunk_size > IO_BUF_CHUNK)
+                chunk_size = IO_BUF_CHUNK;
+
+            if (user_read(base + written, buf, chunk_size)) {
+                free(iovec);
+                return total > 0 ? total : _EFAULT;
+            }
+
+            size_t preview_copy = chunk_size;
+            if (preview_copy > sizeof(preview) - preview_len)
+                preview_copy = sizeof(preview) - preview_len;
+            if (preview_copy > 0) {
+                memcpy(preview + preview_len, buf, preview_copy);
+                preview_len += preview_copy;
+            }
+
+            ssize_t res = fd_write_buf(fd, buf, chunk_size);
+            if (res <= 0) {
+                free(iovec);
+                if (res < 0)
+                    return total > 0 ? total : res;
+                return total;
+            }
+
+            total += res;
+            written += res;
+
+            if ((size_t) res < chunk_size) {
+                done = 1;
+                break;
+            }
         }
 
-        size_t print_size = iovec[i].len;
-        if (print_size > 100) print_size = 100;
-        STRACE(" {\"%.*s\", %u}", print_size, buf + offset, iovec[i].len);
-        offset += iovec[i].len;
-    }
-    res = sys_write_buf(fd_no, buf, io_size);
+        STRACE(" {\"%.*s\", %u}", (int) preview_len, preview, iovec[i].len);
 
-error:
-    free(buf);
+        if (written < len)
+            done = 1;
+    }
+
     free(iovec);
-    return res;
+    return total;
 }
 
 dword_t sys__llseek(fd_t f, dword_t off_high, dword_t off_low, addr_t res_addr, dword_t whence) {
